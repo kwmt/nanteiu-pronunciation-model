@@ -1,0 +1,56 @@
+# wav2vec2 音素モデルを ONNX 生成・量子化し、このリポジトリの Release に公開する。
+#
+# 手動トリガー（workflow_dispatch）で回す。生成物（model.onnx / vocab.json）は Release アセットとして
+# 公開され、アプリ（nanteiu）はその download URL を認証なしで叩く。
+#
+# ★このリポジトリが公開である前提の仕組み。非公開にすると Release アセットの取得に認証が要るようになり、
+#   アプリ側が 404 で取得できなくなる（README「なぜ本体と分けているか」参照）。
+name: build-model
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release タグ（例: v1）"
+        required: true
+        # ★この既定値はアプリ側の既定 URL（nanteiu の composeApp/build.gradle.kts）と対で意味を持つ。
+        #   別のタグで公開するなら、アプリ側の既定値も合わせて変えること
+        #   （合わせないと配布物が 404 のまま「取得できない」状態になる）。
+        # ★タグにスラッシュを入れないこと。`/releases/download/<tag>/<asset>` の形式なので、
+        #   スラッシュ入りのタグはパスの区切りと衝突してダウンロード URL が壊れる。
+        default: "v1"
+
+permissions:
+  contents: write # Release 作成・アセットアップロードに必要
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r tools/requirements.txt
+
+      - name: Export + quantize model
+        run: python tools/export_wav2vec2_onnx.py --out ./out
+
+      - name: Show artifacts
+        run: ls -lh ./out
+
+      - name: Publish to Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            ./out/model.onnx ./out/vocab.json \
+            --title "Pronunciation model ${{ inputs.tag }}" \
+            --notes "facebook/wav2vec2-lv-60-espeak-cv-ft（Apache-2.0）を ONNX 化・int8 量子化したもの。詳細と出典は README を参照。"
+          echo "--- アプリ側に設定する URL ---"
+          echo "model: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/model.onnx"
+          echo "vocab: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/vocab.json"
+          echo "bytes: $(stat -c%s ./out/model.onnx)"

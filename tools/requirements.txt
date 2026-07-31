@@ -1,0 +1,6 @@
+# 発音評価モデル生成（export_wav2vec2_onnx.py）の依存。CI / ローカルの Python 3.11 で使う。
+# ★この環境（開発サンドボックス）では実行しない。CI か手元の ML 環境で回すこと。
+torch==2.4.1
+transformers==4.44.2
+onnx==1.16.2
+onnxruntime==1.19.2
