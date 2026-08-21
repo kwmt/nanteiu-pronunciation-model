@@ -83,15 +83,57 @@ def main() -> None:
     if args.no_quantize:
         os.replace(onnx_fp32, final)
     else:
-        # 3) int8 動的量子化（約377MB → 約200MB）
+        # 3) int8 動的量子化（サイズ・速度の削減）
         from onnxruntime.quantization import quantize_dynamic, QuantType
 
-        quantize_dynamic(onnx_fp32, final, weight_type=QuantType.QInt8)
+        # ★**Conv を量子化しない**（op_types_to_quantize=["MatMul"]）。
+        #
+        #   既定の quantize_dynamic は Conv も量子化し、`ConvInteger` に置き換える。ところが
+        #   ONNX Runtime Android（ARM64）の CPU 実装には int8 の重みを持つ `ConvInteger` が無く、
+        #   **セッションを作る時点で必ず失敗する**:
+        #
+        #       ORT_NOT_IMPLEMENTED: Could not find an implementation for ConvInteger(10)
+        #       node with name '/wav2vec2/feature_extractor/conv_layers.0/conv/Conv_quant'
+        #
+        #   x86 の CI では読めてしまうため、**CI が緑でも端末では1台も動かない**という形で
+        #   世に出た（nanteiu issue #286。実機・エミュレータの両方で再現）。
+        #   量子化されるのは MatMul（transformer の大半の重み）で、Conv は特徴抽出部の
+        #   7 層だけなので、fp32 のまま残してもサイズへの影響は小さい。
+        quantize_dynamic(
+            onnx_fp32,
+            final,
+            weight_type=QuantType.QInt8,
+            op_types_to_quantize=["MatMul"],
+        )
         os.remove(onnx_fp32)
+        assert_android_runnable(final)
 
     size_mb = os.path.getsize(final) / (1024 * 1024)
     print(f"done: {final} ({size_mb:.1f} MB), vocab labels={len(labels)}, blankId={blank_id}")
     print("この model.onnx / vocab.json をホスティングし、URL を OnnxModelSource に渡すこと。")
+
+
+# ★ONNX Runtime Android（ARM64）の CPU 実装に無い演算子。ここに載る演算子を含むモデルを
+#   公開すると、**取得は成功するのにセッション生成で必ず落ちる**（端末側からは
+#   「採点できない」としか見えない）。x86 の CI では読めてしまうので、ここで止める。
+ANDROID_UNSUPPORTED_OPS = {
+    # int8 の重みを持つ ConvInteger は ARM64 に実装が無い（nanteiu issue #286）
+    "ConvInteger",
+}
+
+
+def assert_android_runnable(model_path: str) -> None:
+    """端末で動かせない演算子が残っていないか確かめる。★公開する前に必ず通すこと。"""
+    import onnx
+
+    model = onnx.load(model_path, load_external_data=False)
+    found = sorted({node.op_type for node in model.graph.node} & ANDROID_UNSUPPORTED_OPS)
+    if found:
+        raise SystemExit(
+            f"Android で動かせない演算子が残っている: {', '.join(found)}\n"
+            "量子化の設定を見直すこと（Conv を量子化すると ConvInteger になる）。"
+        )
+    print(f"check: Android で動かせない演算子は無い（{len(model.graph.node)} ノードを確認）")
 
 
 if __name__ == "__main__":
